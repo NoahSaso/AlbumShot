@@ -1,7 +1,7 @@
 Package: com.sassoty.albumshot
 Name: AlbumShot
 Depends: mobilesubstrate
-Version: 0.0.1
+Version: 0.0.2
 Architecture: iphoneos-arm
 Description: Different albums per app screenshots
 Maintainer: Sassoty <sassoty@gmail.com>
