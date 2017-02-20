@@ -5,24 +5,9 @@
 // Delay save to album for SAVE_DELAY seconds so phone has time to add image to camera roll
 #define SAVE_DELAY 3
 
-// Get screenshot C method definition
-extern "C" UIImage *_UICreateScreenUIImage();
-
 static void saveLatestPhotoToCurrentAppAlbum();
 static void moveLatestPhotoToAlbumWithName(NSString *albumName);
 static void saveLatestPHAssetToCollection(PHAssetCollection *collection, NSString *albumName);
-
-@interface SBScreenFlash : NSObject
-// iOS 7
-+ (id)sharedInstance;
-- (void)flash;
-// iOS 8-10
-+ (id)mainScreenFlasher;
-- (void)flashWhiteWithCompletion:(id)arg1;
-// Mine
-+ (id)mySharedInstance;
-- (void)flashWhiteNow;
-@end
 
 @interface SBApplication : NSObject
 - (id)displayName;
@@ -32,56 +17,50 @@ static void saveLatestPHAssetToCollection(PHAssetCollection *collection, NSStrin
 - (id)_accessibilityFrontMostApplication;
 @end
 
-%hook SBScreenFlash
-
-%new +(id)mySharedInstance {
-	if([%c(SBScreenFlash) respondsToSelector:@selector(sharedInstance)]) {
-		return [self sharedInstance]; // iOS 7
-	}
-	return [self mainScreenFlasher]; // iOS 8-10
-}
-
-%new -(void)flashWhiteNow {
-	if([self respondsToSelector:@selector(flash)]) {
-		[self flash]; // iOS 7
-	}else {
-		[self flashWhiteWithCompletion:nil]; // iOS 8-10
-	}
-}
-
-%end
-
+%group SpringBoard
 // iOS 10
 %hook SBScreenshotManager
-
 - (void)saveScreenshotsWithCompletion:(id)arg1 {
-	%orig;
-	saveLatestPhotoToCurrentAppAlbum();
+	%orig; saveLatestPhotoToCurrentAppAlbum();
 }
-
 %end
-
 // iOS 7-9
 %hook SBScreenShotter
-
 - (void)saveScreenshot:(BOOL)screenshot {
-	%orig;
-	saveLatestPhotoToCurrentAppAlbum();
+	%orig; saveLatestPhotoToCurrentAppAlbum();
 }
+%end
+%end
 
+%group Camera
+// iOS 10
+%hook CAMCaptureEngine
+- (void)captureOutput:(id)arg1 didFinishCaptureForResolvedSettings:(id)arg2 error:(id)arg3 {
+	%orig; saveLatestPhotoToCurrentAppAlbum();
+}
+%end
+%end
+
+%group Both
 %end
 
 static void saveLatestPhotoToCurrentAppAlbum() {
-	NSString *displayName;
-	SBApplication *frontMostApplication = [[UIApplication sharedApplication] _accessibilityFrontMostApplication];
-	// Get active application name
-	if(frontMostApplication) {
-		displayName = [frontMostApplication displayName];
-	}else {
-		displayName = @"Other Screenshots";
-	}
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, SAVE_DELAY * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-		moveLatestPhotoToAlbumWithName(displayName);
+	dispatch_async(dispatch_get_main_queue(), ^{
+		NSString *displayName;
+		if([[[NSBundle mainBundle] bundleIdentifier] isEqualToString:@"com.apple.camera"]) {
+			displayName = @"Camera";
+		}else {
+			SBApplication *frontMostApplication = [[UIApplication sharedApplication] _accessibilityFrontMostApplication];
+			// Get active application name
+			if(frontMostApplication) {
+				displayName = [frontMostApplication displayName];
+			}else {
+				displayName = @"Other Screenshots";
+			}
+		}
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, SAVE_DELAY * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+			moveLatestPhotoToAlbumWithName(displayName);
+		});
 	});
 }
 
@@ -92,20 +71,16 @@ static void saveLatestPHAssetToCollection(PHAssetCollection *collection, NSStrin
 	PHFetchResult *fetchResult = [PHAsset fetchAssetsWithMediaType:PHAssetMediaTypeImage options:latestFetchOptions];
 	PHAsset *lastAsset = [fetchResult lastObject];
 	// Save to the album
-	HBLogDebug(@"Saving to album %@", albumName);
+	HBLogDebug(@"Saving asset to album '%@'", albumName);
 	[[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
-		HBLogDebug(@"Getting photo asset");
 	    PHFetchResult *photosAsset = [PHAsset fetchAssetsInAssetCollection:collection options:nil];
-		HBLogDebug(@"Getting album change request %@", photosAsset);
 	    PHAssetCollectionChangeRequest *albumChangeRequest = [PHAssetCollectionChangeRequest changeRequestForAssetCollection:collection assets:photosAsset];
-		HBLogDebug(@"Adding asset %@", albumChangeRequest);
 	    [albumChangeRequest addAssets:@[lastAsset]];
-		HBLogDebug(@"Added asset");
 	} completionHandler:^(BOOL success, NSError *error) {
 	    if(success) {
-	        HBLogDebug(@"Saved '%@'", albumName);
+	        HBLogDebug(@"Saved asset to album '%@'", albumName);
 	    }else {
-	        HBLogDebug(@"Error saving: %@", [error description]);
+	        HBLogDebug(@"Error saving asset to album '%@': %@", albumName, [error description]);
 	    }
 	}];
 }
@@ -113,18 +88,15 @@ static void saveLatestPHAssetToCollection(PHAssetCollection *collection, NSStrin
 static void moveLatestPhotoToAlbumWithName(NSString *albumName) {
 
 	// iOS 8-10
-	HBLogDebug(@"Checking PHPhotoLibrary exists");
 	if(%c(PHPhotoLibrary)) {
+		HBLogDebug(@"Using PHPhotoLibrary");
 
 		__block PHAssetCollection *collection;
 		__block PHObjectPlaceholder *placeholder;
 
 		// Find the album
-		HBLogDebug(@"Fetching options");
 		PHFetchOptions *albumFetchOptions = [PHFetchOptions new];
-		HBLogDebug(@"Getting predicate");
 		albumFetchOptions.predicate = [NSPredicate predicateWithFormat:@"title = %@", albumName];
-		HBLogDebug(@"Getting collection");
 		collection = [PHAssetCollection fetchAssetCollectionsWithType:PHAssetCollectionTypeAlbum subtype:PHAssetCollectionSubtypeAny options:albumFetchOptions].firstObject;
 		// Create the album ifdoesn't exist
 		if(!collection) {
@@ -133,12 +105,12 @@ static void moveLatestPhotoToAlbumWithName(NSString *albumName) {
         		placeholder = [createAlbum placeholderForCreatedAssetCollection];
     		} completionHandler:^(BOOL success, NSError *error) {
         		if(success) {
-					HBLogDebug(@"Created album for '%@'", albumName);
+					HBLogDebug(@"Created album named '%@'", albumName);
 					PHFetchResult *collectionFetchResult = [PHAssetCollection fetchAssetCollectionsWithLocalIdentifiers:@[placeholder.localIdentifier] options:nil];
             		collection = collectionFetchResult.firstObject;
 					saveLatestPHAssetToCollection(collection, albumName);
         		}else {
-					HBLogDebug(@"Error creating album: %@", [error description]);
+					HBLogDebug(@"Error creating album named '%@': %@", albumName, [error description]);
 				}
     		}];
 		}else {
@@ -165,11 +137,14 @@ static void moveLatestPhotoToAlbumWithName(NSString *albumName) {
                         if([albumName isEqualToString:[group valueForProperty:ALAssetsGroupPropertyName]]) {
                             albumWasFound = YES;
                             [group addAsset:alAsset];
+							HBLogDebug(@"Added asset to found album '%@'", albumName);
                             return;
 						// Create album because doesn't exist
                         }else if(group == nil && !albumWasFound) {
+							HBLogDebug(@"Creating album named '%@'", albumName);
                             [library addAssetsGroupAlbumWithName:albumName resultBlock:^(ALAssetsGroup *group) {
                                 [group addAsset:alAsset];
+								HBLogDebug(@"Added asset to album '%@'", albumName);
                         	} failureBlock:nil];
                         }
                     } failureBlock:nil];
@@ -178,4 +153,14 @@ static void moveLatestPhotoToAlbumWithName(NSString *albumName) {
 		} failureBlock:nil];
 	}
 
+}
+
+%ctor {
+	NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+	if([bundleID isEqualToString:@"com.apple.springboard"]) {
+		%init(SpringBoard);
+	}else if([bundleID isEqualToString:@"com.apple.camera"]) {
+		%init(Camera);
+	}
+	%init(Both);
 }
